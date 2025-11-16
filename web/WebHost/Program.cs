@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Http;           // added for IHttpMethodMetadata
 using System.Text.Json;
 using System.Text; // added for UTF8Encoding
 using WebHost;
+using Scalar.AspNetCore; // added
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<PluginEndpointDataSource>();
@@ -13,7 +14,7 @@ var app = builder.Build();
 var dataSource = app.Services.GetRequiredService<PluginEndpointDataSource>();
 
 // Dynamic swagger spec (only plugin endpoints)
-app.MapGet("/swagger/v1/swagger.json", (PluginEndpointDataSource ds) =>
+app.MapGet("/openapi/v1.json", (PluginEndpointDataSource ds) =>
 {
     var doc = WebHost.DynamicOpenApi.Build(ds);
     using var ms = new MemoryStream();
@@ -24,11 +25,11 @@ app.MapGet("/swagger/v1/swagger.json", (PluginEndpointDataSource ds) =>
     return Results.Bytes(ms.ToArray(), "application/json");
 });
 
-// Swagger UI (points to dynamic spec)
-app.UseSwaggerUI(o =>
+// Scalar UI referencing dynamic spec
+app.MapScalarApiReference(opts =>
 {
-    o.SwaggerEndpoint("/swagger/v1/swagger.json", "Dynamic Plugin API v1");
-    o.RoutePrefix = "swagger";
+    opts.Title = "Dynamic Plugin API";
+    // removed: opts.Specification (not a valid property)
 });
 
 // Static endpoints (not included in document)

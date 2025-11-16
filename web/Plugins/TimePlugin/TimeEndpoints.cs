@@ -48,5 +48,5 @@ public sealed class TimeEndpoints : IEndpointModule
 }
 
 // Build: dotnet build "c:\Users\Speid\source\dotnet tests\single\TimePlugin\TimePlugin.csproj" -c Release
-// Output DLL: c:\Users\Speid\source\dotnet tests\single\TimePlugin\bin\Release\net8.0\TimePlugin.dll
-// Copy to: c:\Users\Speid\source\dotnet tests\single\WebHost\bin\Debug\net8.0\Plugins\
+// Output DLL: c:\Users\Speid\source\dotnet tests\single\TimePlugin\bin\Release\net10.0.0\TimePlugin.dll
+// Copy to: c:\Users\Speid\source\dotnet tests\single\WebHost\bin\Debug\net10.0.0\Plugins\

@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
+    <UsePreviewSdk>true</UsePreviewSdk>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RestoreSources>https://api.nuget.org/v3/index.json;$(RestoreSources)</RestoreSources>
@@ -9,6 +10,7 @@
     <ProjectReference Include="..\..\PluginContracts\PluginContracts.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Scalar.AspNetCore" Version="2.10.3" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
   </ItemGroup>
 </Project>
