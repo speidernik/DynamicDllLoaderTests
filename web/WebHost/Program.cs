@@ -180,23 +180,22 @@ try
     var pluginsDir = builder.Configuration["PluginsDirectory"]
         ?? Path.Combine(AppContext.BaseDirectory, "Plugins");
 
-    var pluginConfig = builder.Configuration.GetSection("PluginManager");
+    var gracePeriodSeconds = builder.Configuration.GetValue("PluginManager:GracePeriodSeconds", 30);
+    
     var manager = new WebHost.PluginManager(
         pluginsDir,
         dataSource,
-        app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<PluginManager>()
+        app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<PluginManager>(),
+        gracePeriodSeconds
     );
-
-    manager.EnableHotSwap = pluginConfig.GetValue("EnableHotSwap", true);
-    manager.GracePeriodSeconds = pluginConfig.GetValue("GracePeriodSeconds", 30);
 
     try
     {
         manager.Start();
         Log.Information("✅ Plugin manager started successfully");
         Log.Information("    • Watch Directory: {PluginsDirectory}", pluginsDir);
-        Log.Information("    • Hot-Swap: {HotSwapEnabled}", manager.EnableHotSwap ? "Enabled" : "Disabled");
-        Log.Information("    • Grace Period: {GracePeriodSeconds}s", manager.GracePeriodSeconds);
+        Log.Information("    • Hot-Swap: Always Enabled");
+        Log.Information("    • Grace Period: {GracePeriodSeconds}s", gracePeriodSeconds);
     }
     catch (Exception ex)
     {

@@ -10,6 +10,7 @@ public sealed class PluginManager : IDisposable
     private readonly string _pluginsDir;
     private readonly PluginEndpointDataSource _dataSource;
     private readonly ILogger<PluginManager> _logger;
+    private readonly int _gracePeriodSeconds;
     private FileSystemWatcher? _watcher;
     private readonly object _gate = new();
     private readonly Dictionary<string, PluginHandle> _loaded = new(StringComparer.OrdinalIgnoreCase);
@@ -20,15 +21,13 @@ public sealed class PluginManager : IDisposable
 
     private record PluginHandle(string Path, PluginLoadContext Ctx, IEndpointModule Module);
 
-    public PluginManager(string pluginsDir, PluginEndpointDataSource dataSource, ILogger<PluginManager> logger)
+    public PluginManager(string pluginsDir, PluginEndpointDataSource dataSource, ILogger<PluginManager> logger, int gracePeriodSeconds = 30)
     {
         _pluginsDir = pluginsDir ?? throw new ArgumentNullException(nameof(pluginsDir));
         _dataSource = dataSource ?? throw new ArgumentNullException(nameof(dataSource));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _gracePeriodSeconds = gracePeriodSeconds;
     }
-
-    public bool EnableHotSwap { get; set; } = true;
-    public int GracePeriodSeconds { get; set; } = 30;
 
     public IReadOnlyDictionary<string, string> LoadedPlugins
     {
@@ -91,13 +90,13 @@ public sealed class PluginManager : IDisposable
         {
             _logger.LogInformation("🔄 Plugin file renamed: {OldName} → {NewName}", 
                 Path.GetFileName(e.OldFullPath), Path.GetFileName(e.FullPath));
-            Unload(e.OldFullPath);
+            UnloadImmediate(e.OldFullPath);
             DebounceReload(e.FullPath);
         };
         _watcher.Deleted += (_, e) =>
         {
             _logger.LogInformation("🗑️ Plugin file deleted: {FileName}", Path.GetFileName(e.FullPath));
-            Unload(e.FullPath);
+            UnloadImmediate(e.FullPath);
         };
         _watcher.Error += (_, e) =>
         {
@@ -105,9 +104,8 @@ public sealed class PluginManager : IDisposable
         };
         _watcher.EnableRaisingEvents = true;
 
-        _logger.LogInformation("✅ Plugin Manager started successfully");
-        _logger.LogInformation("    • Hot-Swap: {HotSwapEnabled}", EnableHotSwap ? "Enabled" : "Disabled");
-        _logger.LogInformation("    • Grace Period: {GracePeriodSeconds}s", GracePeriodSeconds);
+        _logger.LogInformation("✅ Plugin Manager started successfully (Hot-Swap Mode)");
+        _logger.LogInformation("    • Grace Period: {GracePeriodSeconds}s", _gracePeriodSeconds);
         _logger.LogInformation("    • Watch Directory: {PluginsDirectory}", _pluginsDir);
     }
 
@@ -156,7 +154,7 @@ public sealed class PluginManager : IDisposable
         {
             var key = Normalize(path);
             
-            if (EnableHotSwap && _loaded.TryGetValue(key, out var oldHandle))
+            if (_loaded.TryGetValue(key, out var oldHandle))
             {
                 _logger.LogInformation("🔄 Hot-swapping plugin: {PluginName} v{Version}", 
                     oldHandle.Module.Name,
@@ -164,18 +162,14 @@ public sealed class PluginManager : IDisposable
                 
                 lock (_unloadLock)
                 {
-                    var unloadTime = DateTime.UtcNow.AddSeconds(GracePeriodSeconds);
+                    var unloadTime = DateTime.UtcNow.AddSeconds(_gracePeriodSeconds);
                     _pendingUnload.Add((unloadTime, new List<IDisposable> { oldHandle.Module }));
                     _logger.LogInformation("    ⏳ Old version scheduled for disposal at {UnloadTime:HH:mm:ss} (grace period: {Seconds}s)",
-                        unloadTime, GracePeriodSeconds);
+                        unloadTime, _gracePeriodSeconds);
                 }
                 
                 _loaded.Remove(key);
                 _dataSource.RemovePlugin(oldHandle.Module.Name);
-            }
-            else
-            {
-                Unload(path);
             }
 
             TryLoad(path);
@@ -252,7 +246,7 @@ public sealed class PluginManager : IDisposable
         }
     }
 
-    private void Unload(string path)
+    private void UnloadImmediate(string path)
     {
         var key = Normalize(path);
         if (_loaded.Remove(key, out var handle))

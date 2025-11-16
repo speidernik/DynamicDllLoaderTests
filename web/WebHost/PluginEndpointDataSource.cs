@@ -68,11 +68,4 @@ public sealed class PluginEndpointDataSource : EndpointDataSource, PluginContrac
         var pluginName = pattern.TrimStart('/').Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "unknown";
         Add(pluginName, ep);
     }
-
-    // Remove or modify Clear() to prevent it from being called during hot-swap
-    public void Clear()
-    {
-        // Only clear if not in hot-swap mode
-        // Consider making this internal or removing it
-    }
 }
