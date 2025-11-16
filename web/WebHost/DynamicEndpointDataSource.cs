@@ -16,7 +16,7 @@ namespace WebHost.Plugins
 		private CancellationChangeToken _changeToken = new CancellationChangeToken(new CancellationToken(true));
 		private CancellationTokenSource _cts = new CancellationTokenSource();
 
-		public override IReadOnlyList<Endpoint> Endpoints => _endpoints as IReadOnlyList<Endpoint>;
+		public override IReadOnlyList<Endpoint> Endpoints => _endpoints as IReadOnlyList<Endpoint> ?? Array.Empty<Endpoint>();
 
 		public override IChangeToken GetChangeToken() => _changeToken;
 

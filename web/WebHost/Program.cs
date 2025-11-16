@@ -176,13 +176,6 @@ try
     .WithTags("System")
     .ExcludeFromDescription();
 
-    // Routing for plugin endpoints
-    app.UseRouting();
-    app.UseEndpoints(endpoints =>
-    {
-        endpoints.DataSources.Add(dataSource);
-    });
-
     // Plugin Manager initialization
     var pluginsDir = builder.Configuration["PluginsDirectory"]
         ?? Path.Combine(AppContext.BaseDirectory, "Plugins");
