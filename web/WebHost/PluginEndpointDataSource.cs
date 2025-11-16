@@ -10,18 +10,30 @@ namespace WebHost;
 public sealed class PluginEndpointDataSource : EndpointDataSource, PluginContracts.IPluginEndpointRegistry
 {
     private readonly ConcurrentDictionary<string, List<Endpoint>> _pluginEndpoints = new(StringComparer.OrdinalIgnoreCase);
+    private readonly object _updateLock = new object();
     private CancellationTokenSource _cts = new();
 
-    public override IReadOnlyList<Endpoint> Endpoints =>
-        _pluginEndpoints.Values.SelectMany(l => l).ToList();
+    public override IReadOnlyList<Endpoint> Endpoints
+    {
+        get
+        {
+            lock (_updateLock)
+            {
+                return _pluginEndpoints.Values.SelectMany(l => l).ToList();
+            }
+        }
+    }
 
     public override IChangeToken GetChangeToken() => new CancellationChangeToken(_cts.Token);
 
     private void Add(string plugin, Endpoint ep)
     {
-        var list = _pluginEndpoints.GetOrAdd(plugin, _ => new List<Endpoint>());
-        list.Add(ep);
-        Refresh();
+        lock (_updateLock)
+        {
+            var list = _pluginEndpoints.GetOrAdd(plugin, _ => new List<Endpoint>());
+            list.Add(ep);
+            Refresh();
+        }
     }
 
     private void Refresh()
@@ -34,8 +46,11 @@ public sealed class PluginEndpointDataSource : EndpointDataSource, PluginContrac
 
     public void RemovePlugin(string plugin)
     {
-        if (_pluginEndpoints.Remove(plugin, out _))
-            Refresh();
+        lock (_updateLock)
+        {
+            if (_pluginEndpoints.Remove(plugin, out _))
+                Refresh();
+        }
     }
 
     public void AddGet(string pattern, Delegate handler) => AddEndpoint(pattern, "GET", handler);
@@ -52,5 +67,12 @@ public sealed class PluginEndpointDataSource : EndpointDataSource, PluginContrac
         // plugin name = first segment after leading slash if present
         var pluginName = pattern.TrimStart('/').Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "unknown";
         Add(pluginName, ep);
+    }
+
+    // Remove or modify Clear() to prevent it from being called during hot-swap
+    public void Clear()
+    {
+        // Only clear if not in hot-swap mode
+        // Consider making this internal or removing it
     }
 }
