@@ -51,39 +51,64 @@ public sealed class PluginManager : IDisposable
         try
         {
             Directory.CreateDirectory(_pluginsDir);
-            _logger.LogInformation("Plugin directory created/verified: {PluginsDir}", _pluginsDir);
+            _logger.LogInformation("📁 Plugin directory verified: {PluginsDirectory}", _pluginsDir);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to create plugin directory: {PluginsDir}", _pluginsDir);
+            _logger.LogError(ex, "❌ Failed to create plugin directory: {PluginsDirectory}", _pluginsDir);
             throw;
         }
 
-        foreach (var dll in Directory.EnumerateFiles(_pluginsDir, "*.dll"))
+        var dllFiles = Directory.EnumerateFiles(_pluginsDir, "*.dll").ToList();
+        if (dllFiles.Any())
         {
-            DebounceReload(dll);
+            _logger.LogInformation("🔍 Scanning {PluginCount} plugin(s) in directory", dllFiles.Count);
+            foreach (var dll in dllFiles)
+            {
+                DebounceReload(dll);
+            }
+        }
+        else
+        {
+            _logger.LogInformation("📂 No plugins found in directory");
         }
 
         _watcher = new(_pluginsDir, "*.dll")
         {
             NotifyFilter = NotifyFilters.FileName | NotifyFilters.Size | NotifyFilters.LastWrite
         };
-        _watcher.Created += (_, e) => DebounceReload(e.FullPath);
-        _watcher.Changed += (_, e) => DebounceReload(e.FullPath);
+        _watcher.Created += (_, e) =>
+        {
+            _logger.LogInformation("➕ Plugin file created: {FileName}", Path.GetFileName(e.FullPath));
+            DebounceReload(e.FullPath);
+        };
+        _watcher.Changed += (_, e) =>
+        {
+            _logger.LogInformation("📝 Plugin file modified: {FileName}", Path.GetFileName(e.FullPath));
+            DebounceReload(e.FullPath);
+        };
         _watcher.Renamed += (_, e) =>
         {
+            _logger.LogInformation("🔄 Plugin file renamed: {OldName} → {NewName}", 
+                Path.GetFileName(e.OldFullPath), Path.GetFileName(e.FullPath));
             Unload(e.OldFullPath);
             DebounceReload(e.FullPath);
         };
-        _watcher.Deleted += (_, e) => Unload(e.FullPath);
+        _watcher.Deleted += (_, e) =>
+        {
+            _logger.LogInformation("🗑️ Plugin file deleted: {FileName}", Path.GetFileName(e.FullPath));
+            Unload(e.FullPath);
+        };
         _watcher.Error += (_, e) =>
         {
-            _logger.LogError(e.GetException(), "File system watcher error");
+            _logger.LogError(e.GetException(), "⚠️ File system watcher encountered an error");
         };
         _watcher.EnableRaisingEvents = true;
 
-        _logger.LogInformation("Plugin manager started. Hot-swap: {HotSwap}, Grace period: {GracePeriod}s",
-            EnableHotSwap, GracePeriodSeconds);
+        _logger.LogInformation("✅ Plugin Manager started successfully");
+        _logger.LogInformation("    • Hot-Swap: {HotSwapEnabled}", EnableHotSwap ? "Enabled" : "Disabled");
+        _logger.LogInformation("    • Grace Period: {GracePeriodSeconds}s", GracePeriodSeconds);
+        _logger.LogInformation("    • Watch Directory: {PluginsDirectory}", _pluginsDir);
     }
 
     private void DebounceReload(string path)
@@ -108,11 +133,11 @@ public sealed class PluginManager : IDisposable
             }
             catch (OperationCanceledException)
             {
-                // Expected when debouncing
+                _logger.LogDebug("⏭️ Reload cancelled (debounced): {FileName}", Path.GetFileName(path));
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error during plugin reload: {Path}", Path.GetFileName(path));
+                _logger.LogError(ex, "❌ Error during plugin reload: {FileName}", Path.GetFileName(path));
             }
             finally
             {
@@ -133,13 +158,16 @@ public sealed class PluginManager : IDisposable
             
             if (EnableHotSwap && _loaded.TryGetValue(key, out var oldHandle))
             {
-                // Schedule old plugin for delayed disposal
+                _logger.LogInformation("🔄 Hot-swapping plugin: {PluginName} v{Version}", 
+                    oldHandle.Module.Name,
+                    oldHandle.Module.GetType().Assembly.GetName().Version?.ToString() ?? "unknown");
+                
                 lock (_unloadLock)
                 {
                     var unloadTime = DateTime.UtcNow.AddSeconds(GracePeriodSeconds);
                     _pendingUnload.Add((unloadTime, new List<IDisposable> { oldHandle.Module }));
-                    _logger.LogInformation("Scheduled plugin '{Name}' for disposal in {Seconds}s",
-                        oldHandle.Module.Name, GracePeriodSeconds);
+                    _logger.LogInformation("    ⏳ Old version scheduled for disposal at {UnloadTime:HH:mm:ss} (grace period: {Seconds}s)",
+                        unloadTime, GracePeriodSeconds);
                 }
                 
                 _loaded.Remove(key);
@@ -158,11 +186,13 @@ public sealed class PluginManager : IDisposable
     private void TryLoad(string path)
     {
         PluginLoadContext? ctx = null;
+        var fileName = Path.GetFileName(path);
+        
         try
         {
+            _logger.LogDebug("📥 Loading plugin from: {FileName}", fileName);
             ctx = new PluginLoadContext(Path.GetDirectoryName(path)!);
             
-            // Wait for file to be released by other processes
             for (int i = 0; i < 5; i++)
             {
                 try
@@ -175,7 +205,7 @@ public sealed class PluginManager : IDisposable
 
                     if (type is null)
                     {
-                        _logger.LogWarning("No IEndpointModule found in {FileName}", Path.GetFileName(path));
+                        _logger.LogWarning("⚠️ No IEndpointModule implementation found in {FileName}", fileName);
                         ctx.Unload();
                         return;
                     }
@@ -183,26 +213,41 @@ public sealed class PluginManager : IDisposable
                     var module = (IEndpointModule)Activator.CreateInstance(type)!;
                     module.Register(_dataSource);
                     _loaded[Normalize(path)] = new PluginHandle(path, ctx, module);
-                    _logger.LogInformation("Loaded plugin: {Name} v{Version}",
-                        module.Name,
-                        module.GetType().Assembly.GetName().Version?.ToString() ?? "unknown");
+                    
+                    var version = module.GetType().Assembly.GetName().Version?.ToString() ?? "unknown";
+                    _logger.LogInformation("✅ Plugin loaded successfully");
+                    _logger.LogInformation("    • Name: {PluginName}", module.Name);
+                    _logger.LogInformation("    • Version: {PluginVersion}", version);
+                    _logger.LogInformation("    • File: {FileName}", fileName);
                     return;
                 }
                 catch (IOException) when (i < 4)
                 {
+                    _logger.LogDebug("⏳ File locked, retrying... (attempt {Attempt}/5)", i + 1);
                     Thread.Sleep(100);
                 }
             }
+            
+            _logger.LogError("❌ Failed to load plugin after 5 attempts: {FileName} (file is locked)", fileName);
         }
         catch (ReflectionTypeLoadException rtle)
         {
-            var msgs = string.Join("; ", rtle.LoaderExceptions.Select(e => e?.Message ?? "unknown"));
-            _logger.LogError("Type load error in {FileName}: {Errors}", Path.GetFileName(path), msgs);
+            var errors = rtle.LoaderExceptions
+                .Where(e => e != null)
+                .Select(e => e!.Message)
+                .Distinct()
+                .ToList();
+            
+            _logger.LogError("❌ Type load errors in {FileName}:", fileName);
+            foreach (var error in errors)
+            {
+                _logger.LogError("    • {Error}", error);
+            }
             ctx?.Unload();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Failed to load plugin: {FileName}", Path.GetFileName(path));
+            _logger.LogError(ex, "❌ Failed to load plugin: {FileName}", fileName);
             ctx?.Unload();
         }
     }
@@ -214,14 +259,15 @@ public sealed class PluginManager : IDisposable
         {
             try
             {
+                _logger.LogInformation("🔌 Unloading plugin: {PluginName}", handle.Module.Name);
                 _dataSource.RemovePlugin(handle.Module.Name);
                 handle.Module.Dispose();
                 handle.Ctx.Unload();
-                _logger.LogInformation("Unloaded plugin: {Name}", handle.Module.Name);
+                _logger.LogInformation("    ✅ Plugin unloaded successfully");
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Error during plugin unload: {Name}", handle.Module.Name);
+                _logger.LogWarning(ex, "⚠️ Error during plugin unload: {PluginName}", handle.Module.Name);
             }
             
             GC.Collect();
@@ -237,6 +283,11 @@ public sealed class PluginManager : IDisposable
             var now = DateTime.UtcNow;
             var toUnload = _pendingUnload.Where(p => p.UnloadTime <= now).ToList();
 
+            if (toUnload.Any())
+            {
+                _logger.LogDebug("🧹 Processing {Count} pending plugin disposal(s)", toUnload.Count);
+            }
+
             foreach (var (unloadTime, plugins) in toUnload)
             {
                 foreach (var plugin in plugins)
@@ -244,11 +295,11 @@ public sealed class PluginManager : IDisposable
                     try
                     {
                         plugin.Dispose();
-                        _logger.LogDebug("Disposed old plugin instance after grace period");
+                        _logger.LogDebug("    ✅ Old plugin instance disposed after grace period");
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogWarning(ex, "Error disposing old plugin instance");
+                        _logger.LogWarning(ex, "    ⚠️ Error disposing old plugin instance");
                     }
                 }
             }
@@ -264,12 +315,17 @@ public sealed class PluginManager : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        _logger.LogInformation("Disposing plugin manager");
+        _logger.LogInformation("🛑 Disposing Plugin Manager...");
 
         _watcher?.Dispose();
         
         lock (_gate)
         {
+            if (_loaded.Any())
+            {
+                _logger.LogInformation("    Unloading {PluginCount} active plugin(s)", _loaded.Count);
+            }
+            
             foreach (var h in _loaded.Values)
             {
                 try
@@ -277,18 +333,23 @@ public sealed class PluginManager : IDisposable
                     _dataSource.RemovePlugin(h.Module.Name);
                     h.Module.Dispose();
                     h.Ctx.Unload();
+                    _logger.LogDebug("    • Disposed: {PluginName}", h.Module.Name);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Error disposing plugin: {Name}", h.Module.Name);
+                    _logger.LogWarning(ex, "    ⚠️ Error disposing plugin: {PluginName}", h.Module.Name);
                 }
             }
             _loaded.Clear();
         }
 
-        // Clean up any pending unloads immediately
         lock (_unloadLock)
         {
+            if (_pendingUnload.Any())
+            {
+                _logger.LogDebug("    Cleaning up {Count} pending disposal(s)", _pendingUnload.Count);
+            }
+            
             foreach (var (_, plugins) in _pendingUnload)
             {
                 foreach (var plugin in plugins)
@@ -304,6 +365,6 @@ public sealed class PluginManager : IDisposable
         GC.WaitForPendingFinalizers();
         GC.Collect();
 
-        _logger.LogInformation("Plugin manager disposed");
+        _logger.LogInformation("✅ Plugin Manager disposed successfully");
     }
 }
