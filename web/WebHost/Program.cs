@@ -110,7 +110,9 @@ try
     app.UseResponseCompression();
     app.UseCors();
 
+    // Register plugin endpoints with routing system
     var dataSource = app.Services.GetRequiredService<PluginEndpointDataSource>();
+    ((IEndpointRouteBuilder)app).DataSources.Add(dataSource);
 
     // Health checks
     app.MapHealthChecks("/health");
