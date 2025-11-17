@@ -64,6 +64,8 @@ internal static class DynamicOpenApi
                     "put" => OperationType.Put,
                     "delete" => OperationType.Delete,
                     "patch" => OperationType.Patch,
+                    "head" => OperationType.Head,
+                    "options" => OperationType.Options,
                     _ => (OperationType?)null
                 };
                 if (opType.HasValue)
@@ -90,8 +92,11 @@ internal static class DynamicOpenApi
     private static string InferParamType(RoutePatternParameterPart p)
     {
         var policies = p.ParameterPolicies.Select(pol => pol.Content).ToList();
-        if (policies.Contains("int")) return "integer";
+        if (policies.Contains("int") || policies.Contains("long")) return "integer";
+        if (policies.Contains("decimal") || policies.Contains("float") || policies.Contains("double")) return "number";
         if (policies.Contains("bool")) return "boolean";
+        if (policies.Contains("guid")) return "string"; // format could be set, but keep type stable
+        if (policies.Contains("datetime") || policies.Contains("datetimeutc")) return "string";
         return "string";
     }
 

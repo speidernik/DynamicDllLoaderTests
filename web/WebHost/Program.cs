@@ -51,7 +51,8 @@ try
     builder.Services.AddSingleton<PluginEndpointDataSource>();
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddHealthChecks()
-        .AddCheck<PluginHealthCheck>("plugins");
+        // Tag as "ready" so readiness probe reflects plugin state
+        .AddCheck<PluginHealthCheck>("plugins", tags: new[] { "ready" });
 
     // CORS (configure as needed)
     builder.Services.AddCors(options =>
@@ -103,6 +104,12 @@ try
         context.Response.Headers["X-Frame-Options"] = "DENY";
         context.Response.Headers["X-XSS-Protection"] = "1; mode=block";
         context.Response.Headers["Referrer-Policy"] = "no-referrer";
+        // Remove server header for less information disclosure
+        context.Response.OnStarting(() =>
+        {
+            context.Response.Headers.Remove("Server");
+            return Task.CompletedTask;
+        });
         await next();
     });
 

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using PluginContracts;
 using Microsoft.Extensions.Logging;
+using Microsoft.AspNetCore.Http; // for Endpoint
 
 namespace WebHost;
 
@@ -18,8 +19,9 @@ public sealed class PluginManager : IDisposable
     private readonly List<(DateTime UnloadTime, List<IDisposable> Plugins)> _pendingUnload = new();
     private readonly object _unloadLock = new();
     private volatile bool _disposed;
+    private System.Threading.PeriodicTimer? _cleanupTimer;
 
-    private record PluginHandle(string Path, PluginLoadContext Ctx, IEndpointModule Module);
+    private record PluginHandle(string Path, PluginLoadContext Ctx, IEndpointModule Module, IReadOnlyCollection<string> PluginKeys);
 
     public PluginManager(string pluginsDir, PluginEndpointDataSource dataSource, ILogger<PluginManager> logger, int gracePeriodSeconds = 30)
     {
@@ -74,7 +76,9 @@ public sealed class PluginManager : IDisposable
 
         _watcher = new(_pluginsDir, "*.dll")
         {
-            NotifyFilter = NotifyFilters.FileName | NotifyFilters.Size | NotifyFilters.LastWrite
+            NotifyFilter = NotifyFilters.FileName | NotifyFilters.Size | NotifyFilters.LastWrite,
+            IncludeSubdirectories = false,
+            InternalBufferSize = Math.Min(64 * 1024, 16 * 1024 * 1024) // increase to reduce event loss
         };
         _watcher.Created += (_, e) =>
         {
@@ -103,6 +107,28 @@ public sealed class PluginManager : IDisposable
             _logger.LogError(e.GetException(), "⚠️ File system watcher encountered an error");
         };
         _watcher.EnableRaisingEvents = true;
+
+        // periodic cleanup for pending unloads
+        _cleanupTimer = new System.Threading.PeriodicTimer(TimeSpan.FromSeconds(Math.Max(1, _gracePeriodSeconds / 3)));
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (await _cleanupTimer.WaitForNextTickAsync())
+                {
+                    if (_disposed) break;
+                    ProcessPendingUnloads();
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                // ignore during shutdown
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Cleanup timer loop terminated");
+            }
+        });
 
         _logger.LogInformation("✅ Plugin Manager started successfully (Hot-Swap Mode)");
         _logger.LogInformation("    • Grace Period: {GracePeriodSeconds}s", _gracePeriodSeconds);
@@ -169,7 +195,11 @@ public sealed class PluginManager : IDisposable
                 }
                 
                 _loaded.Remove(key);
-                _dataSource.RemovePlugin(oldHandle.Module.Name);
+                // remove endpoints registered by this plugin instance (by captured plugin keys)
+                foreach (var pluginKey in oldHandle.PluginKeys.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    _dataSource.RemovePlugin(pluginKey);
+                }
             }
 
             TryLoad(path);
@@ -204,9 +234,22 @@ public sealed class PluginManager : IDisposable
                         return;
                     }
 
+                    // capture endpoints before registration to detect what this module adds
+                    var before = _dataSource.Endpoints.ToHashSet();
+
                     var module = (IEndpointModule)Activator.CreateInstance(type)!;
                     module.Register(_dataSource);
-                    _loaded[Normalize(path)] = new PluginHandle(path, ctx, module);
+
+                    var after = _dataSource.Endpoints;
+                    var added = after.Where(e => !before.Contains(e)).ToList();
+                    var pluginKeys = added
+                        .Select(e => TryParsePluginKeyFromDisplayName(e.DisplayName))
+                        .Where(k => !string.IsNullOrWhiteSpace(k))
+                        .Select(k => k!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    _loaded[Normalize(path)] = new PluginHandle(path, ctx, module, pluginKeys);
                     
                     var version = module.GetType().Assembly.GetName().Version?.ToString() ?? "unknown";
                     _logger.LogInformation("✅ Plugin loaded successfully");
@@ -246,6 +289,17 @@ public sealed class PluginManager : IDisposable
         }
     }
 
+    private static string? TryParsePluginKeyFromDisplayName(string? displayName)
+    {
+        if (string.IsNullOrWhiteSpace(displayName)) return null;
+        if (!displayName.StartsWith("Plugin:", StringComparison.OrdinalIgnoreCase)) return null;
+        var rest = displayName.Substring("Plugin:".Length);
+        var key = rest.TrimStart('/')
+                      .Split('/', StringSplitOptions.RemoveEmptyEntries)
+                      .FirstOrDefault();
+        return string.IsNullOrWhiteSpace(key) ? null : key;
+    }
+
     private void UnloadImmediate(string path)
     {
         var key = Normalize(path);
@@ -254,7 +308,10 @@ public sealed class PluginManager : IDisposable
             try
             {
                 _logger.LogInformation("🔌 Unloading plugin: {PluginName}", handle.Module.Name);
-                _dataSource.RemovePlugin(handle.Module.Name);
+                foreach (var pluginKey in handle.PluginKeys.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    _dataSource.RemovePlugin(pluginKey);
+                }
                 handle.Module.Dispose();
                 handle.Ctx.Unload();
                 _logger.LogInformation("    ✅ Plugin unloaded successfully");
@@ -311,7 +368,15 @@ public sealed class PluginManager : IDisposable
 
         _logger.LogInformation("🛑 Disposing Plugin Manager...");
 
+        try { _cleanupTimer?.Dispose(); } catch { /* ignore */ }
         _watcher?.Dispose();
+        
+        // cancel pending debounce reloads
+        foreach (var kv in _debouncers)
+        {
+            try { kv.Value.Cancel(); kv.Value.Dispose(); } catch { /* ignore */ }
+        }
+        _debouncers.Clear();
         
         lock (_gate)
         {
@@ -324,7 +389,10 @@ public sealed class PluginManager : IDisposable
             {
                 try
                 {
-                    _dataSource.RemovePlugin(h.Module.Name);
+                    foreach (var pluginKey in h.PluginKeys.Distinct(StringComparer.OrdinalIgnoreCase))
+                    {
+                        _dataSource.RemovePlugin(pluginKey);
+                    }
                     h.Module.Dispose();
                     h.Ctx.Unload();
                     _logger.LogDebug("    • Disposed: {PluginName}", h.Module.Name);
